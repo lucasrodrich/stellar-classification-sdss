@@ -8,6 +8,7 @@ submissions/
 models/
 *.pkl
 *.joblib
+catboost_info/
 # Python environment
 venv/
 .venv/

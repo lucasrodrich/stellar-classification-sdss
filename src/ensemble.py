@@ -199,6 +199,32 @@ def cross_validate(name, fit_one, X, y, Xt, predict_prep=None):
 
 
 # ----------------------------------------------------------------------
+# Weight search: find convex blend weights (summing to 1) that maximize the
+# OOF accuracy. Equal weights are just one point in this search; a weaker model
+# (here CatBoost) should get less weight, not an automatic 1/3.
+# ----------------------------------------------------------------------
+def search_blend_weights(oofs, y, step=0.05):
+    """Grid-search non-negative weights summing to 1 over the model OOF probs.
+
+    Returns (best_weights, best_accuracy). With 3 models there are only 2 free
+    weights, so a coarse grid is plenty and stays interpretable.
+    """
+    best_w, best_acc = None, -1.0
+    grid = np.arange(0.0, 1.0 + 1e-9, step)
+    for w_lgb in grid:
+        for w_xgb in grid:
+            w_cat = 1.0 - w_lgb - w_xgb
+            if w_cat < -1e-9:
+                continue  # weights must stay non-negative and sum to 1
+            blend = w_lgb * oofs[0] + w_xgb * oofs[1] + w_cat * oofs[2]
+            acc = accuracy_score(y, blend.argmax(1))
+            if acc > best_acc:
+                best_acc = acc
+                best_w = (round(w_lgb, 3), round(w_xgb, 3), round(w_cat, 3))
+    return best_w, best_acc
+
+
+# ----------------------------------------------------------------------
 # 4. Blend the three models and write the submission
 # ----------------------------------------------------------------------
 def main():
@@ -215,22 +241,45 @@ def main():
         "CatBoost", fit_cat, X, y, Xt, predict_prep=cat_predict_frame
     )
 
-    # Simple average blend of the OOF probabilities (KISS: equal weights first).
-    oof_blend = (oof_lgb + oof_xgb + oof_cat) / 3
-    test_blend = (test_lgb + test_xgb + test_cat) / 3
+    # Save OOF + test probabilities so blend weights can be re-tuned later WITHOUT
+    # retraining (10 min -> milliseconds). These .npy files are gitignored.
+    for name, arr in [
+        ("oof_lgb", oof_lgb), ("oof_xgb", oof_xgb), ("oof_cat", oof_cat),
+        ("test_lgb", test_lgb), ("test_xgb", test_xgb), ("test_cat", test_cat),
+    ]:
+        np.save(f"{name}.npy", arr)
 
-    blend_acc = accuracy_score(y, oof_blend.argmax(1))
-    print("=" * 56)
-    print("Per-model vs. blended cross-validated accuracy:")
-    print(f"  LightGBM : {accuracy_score(y, oof_lgb.argmax(1)):.5f}")
-    print(f"  XGBoost  : {accuracy_score(y, oof_xgb.argmax(1)):.5f}")
-    print(f"  CatBoost : {accuracy_score(y, oof_cat.argmax(1)):.5f}")
-    print(f"  BLEND    : {blend_acc:.5f}")
-    print("=" * 56)
+    oofs = [oof_lgb, oof_xgb, oof_cat]
+    tests = [test_lgb, test_xgb, test_cat]
+    singles = [accuracy_score(y, o.argmax(1)) for o in oofs]
+    equal_blend_acc = accuracy_score(y, (oof_lgb + oof_xgb + oof_cat).argmax(1))
+
+    # Find the best weighted blend on the OOF predictions.
+    best_w, best_acc = search_blend_weights(oofs, y)
+
+    print("=" * 60)
+    print("Cross-validated accuracy:")
+    print(f"  LightGBM        : {singles[0]:.5f}")
+    print(f"  XGBoost         : {singles[1]:.5f}")
+    print(f"  CatBoost        : {singles[2]:.5f}")
+    print(f"  Equal blend     : {equal_blend_acc:.5f}")
+    print(f"  Weighted blend  : {best_acc:.5f}   weights (lgb, xgb, cat) = {best_w}")
+    print("=" * 60)
+
+    # Submit whichever scored best on OOF: the weighted blend, or the best single
+    # model if no blend beat it.
+    if best_acc >= max(singles):
+        test_final = best_w[0] * tests[0] + best_w[1] * tests[1] + best_w[2] * tests[2]
+        chosen = f"weighted blend {best_w}"
+    else:
+        winner = int(np.argmax(singles))
+        test_final = tests[winner]
+        chosen = ["LightGBM", "XGBoost", "CatBoost"][winner]
+    print(f"Using {chosen} for the submission.")
 
     final = pd.DataFrame({
         "id": pd.read_csv("data/test.csv")["id"],
-        "class": [INT_TO_CLASS[i] for i in test_blend.argmax(1)],
+        "class": [INT_TO_CLASS[i] for i in test_final.argmax(1)],
     })
     final.to_csv("submission_ensemble.csv", index=False)
     print("\nSaved submission_ensemble.csv")

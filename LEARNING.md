@@ -676,8 +676,37 @@ blend_acc  = accuracy_score(y, oof_blend.argmax(1))
 - Crucially, we blend the **OOF** probabilities and score them. That gives an *honest*
   ensemble accuracy on data none of the models trained on — the same trustworthy yardstick
   as before. We print each model's solo CV score next to the blend, so you can literally
-  see whether the ensemble earned its keep. (Usually the blend edges out the best single
-  model by a small but real margin.)
+  see whether the ensemble earned its keep — and on this dataset it did **not**, at least not
+  with equal weights (see the honest result below).
+
+### An honest result: the equal-weight blend LOST to the baseline
+
+When we actually ran this, here is what came out:
+
+| Model | CV accuracy |
+|-------|-------------|
+| LightGBM | **0.96805** (best single) |
+| XGBoost | 0.96764 |
+| CatBoost | 0.96601 |
+| Equal-weight blend | 0.96763 |
+
+The blend came in *below* the best single model. This is an important, non-obvious lesson
+that contradicts the lazy "ensembles always win" intuition: **averaging only helps when the
+members are both good AND comparably strong.** Here CatBoost is noticeably weaker (~0.002
+below LightGBM), and giving it an equal `1/3` vote dragged the average down past the best
+member. A weak voter with a full vote hurts the committee.
+
+The fix is a **weighted blend**: weight each model by how good (and how different) it is —
+lots of weight on LightGBM, some on XGBoost (close and diverse), little or none on CatBoost.
+The right way to choose those weights is to search them against the **OOF** score, which is
+why a good ensemble script **saves the OOF probabilities to disk** — then you can tune blend
+weights in milliseconds instead of retraining for ten minutes each time. (That is exactly the
+"save OOF predictions for reproducible stacking" item on the README checklist, and the reason
+`ensemble.py` writes `oof_*.npy` / `test_*.npy` and then runs a small weight search.)
+
+One honesty caveat: tuning the weights on the same OOF you score on can *slightly* flatter the
+result (you're fitting 2 free numbers to that data). With ~577k rows and only two weights it's
+negligible here, but the principled version would tune weights inside a nested split.
 - The same averaging is applied to the test predictions, and the result is written to
   `submission_ensemble.csv` (kept separate from the baseline's `submission.csv` so you can
   compare both on Kaggle).
