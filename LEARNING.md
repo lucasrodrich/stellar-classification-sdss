@@ -562,3 +562,289 @@ The model is almost a detail; the discipline of measuring honestly is the skill.
   averaging. The ensemble is just doing what this script does, three times, and blending.
 
 You built (and now understand) a verified 0.968-accuracy pipeline. That's a real foundation.
+
+---
+
+## Part 9 — The ensemble (`src/ensemble.py`), explained
+
+This is the project's next real step, and it's the perfect lesson in "build on a verified
+baseline." Read Parts 0–8 first; this part assumes you understand the CV loop, OOF
+predictions, and probability averaging.
+
+### The one-sentence idea
+
+**Run the baseline three times with three *different* model families, then average their
+probabilities.** That's the whole thing. If you understand `stellar.py`, you already
+understand 90% of `ensemble.py`.
+
+### Why three models instead of one (the thinking)
+
+LightGBM, XGBoost, and CatBoost are all "gradient-boosted trees" — same broad idea — but
+they grow their trees by different rules, so they make **different mistakes**. Picture
+three competent students grading the same exam. Each gets a few questions wrong, but
+rarely the *same* questions. If you take the majority/average of their answers, the
+individual errors cancel and the group is more reliable than any one of them.
+
+Averaging only helps when the models are **good but different**. Three identical models
+would just reproduce the same mistakes — averaging them changes nothing. The diversity is
+the entire point. That's why we deliberately use three different *libraries* rather than
+three LightGBMs with slightly different seeds.
+
+### The key engineering decision before writing a line
+
+The risk in this script isn't the maths — it's that **each library has a different API for
+two things**: (1) how you tell it which columns are categorical, and (2) how you turn on
+early stopping. Get those wrong and the script crashes after minutes of training. So the
+disciplined move (which we actually did) was to **smoke-test all three APIs on a tiny
+sample first** — 8000 rows, a few seconds — to confirm each model trains and returns
+probabilities of the right shape *before* committing to the full ~10-minute run. This is
+the "always give yourself a way to check your work" principle, applied early and cheaply.
+
+### What changed in structure (and why)
+
+The baseline is one flat top-to-bottom script — perfect for reading once. The ensemble is
+organized into small **functions** instead. Why the upgrade?
+
+- **DRY (Don't Repeat Yourself):** the 5-fold CV loop is identical for all three models, so
+  it's written *once* in `cross_validate()` and reused three times. Without functions you'd
+  copy-paste that loop three times and they'd drift apart.
+- **Testability:** because the logic lives in functions with a `main()` guarded by
+  `if __name__ == "__main__":`, the smoke test can `import` those functions and exercise
+  them on a small sample *without* running the whole thing. You cannot easily test a flat
+  script; you can always test a function.
+
+That `if __name__ == "__main__":` line means "only run `main()` when this file is executed
+directly, not when it's imported." It's what lets the smoke test borrow the functions safely.
+
+### The shared engine — `cross_validate()`
+
+This is the heart of the file, and it's just the baseline's loop made reusable:
+
+```python
+def cross_validate(name, fit_one, X, y, Xt, predict_prep=None):
+    skf = StratifiedKFold(n_splits=N_SPLITS, shuffle=True, random_state=SEED)
+    oof = np.zeros((len(X), N_CLASSES))
+    test_probs = np.zeros((len(Xt), N_CLASSES))
+    prep = predict_prep if predict_prep is not None else (lambda f: f)
+    for fold, (tr_idx, va_idx) in enumerate(skf.split(X, y)):
+        model = fit_one(X.iloc[tr_idx], y[tr_idx], X.iloc[va_idx], y[va_idx])
+        oof[va_idx] = model.predict_proba(prep(X.iloc[va_idx]))
+        test_probs += model.predict_proba(prep(Xt)) / N_SPLITS
+        ...
+    return oof, test_probs
+```
+
+- It takes `fit_one` — *a function that trains one model on one fold* — as an **argument**.
+  This is the clever bit: the loop is identical for every model; only the "how do I train
+  one model" step differs. So we pass that step in. (Passing a function into another function
+  is called a "higher-order function" — a very useful pattern.)
+- `predict_prep` is an optional last-second transform applied before `predict_proba`. Only
+  CatBoost needs it (to stringify categoricals); the others pass `None` and get an identity
+  function (`lambda f: f`, meaning "return the frame unchanged").
+- Everything else — the fold split, filling `oof` at held-out rows, accumulating
+  `test_probs` as a running average — is *exactly* what `stellar.py` does. You've seen it.
+
+### The three `fit_*` functions — where the libraries differ
+
+Each is tiny and does one job: build one model and train it on one fold. They look almost
+identical; the differences are the API quirks we smoke-tested:
+
+- `fit_lgb` — uses a **callback** for early stopping (`lgb.early_stopping(80)`), and accepts
+  the `category` dtype natively. Identical to the baseline's inner training step.
+- `fit_xgb` — early stopping and the metric are set in the **constructor**
+  (`early_stopping_rounds=80`, `eval_metric="mlogloss"`), and it needs
+  `enable_categorical=True` to accept category columns.
+- `fit_cat` — early stopping is a constructor arg too, but CatBoost wants categoricals as
+  **plain strings** (not the `category` dtype) and you name them via `cat_features=...` in
+  `.fit()`. That's why this function copies the data and does `.astype(str)` on the two
+  category columns first. (`cat_predict_frame` does the same at prediction time.)
+
+Same concept (categoricals + early stopping), three different spellings. Learning to read
+three libraries' docs for "the same idea, expressed their way" is a core real-world skill.
+
+### The blend — `main()`
+
+```python
+oof_blend  = (oof_lgb + oof_xgb + oof_cat) / 3
+test_blend = (test_lgb + test_xgb + test_cat) / 3
+blend_acc  = accuracy_score(y, oof_blend.argmax(1))
+```
+
+- Each `oof_*` is an (n_rows x 3) table of probabilities. Adding three such tables and
+  dividing by 3 gives the **element-wise average probability** per class per row. Then
+  `argmax(1)` picks the winning class, exactly as in the baseline.
+- Crucially, we blend the **OOF** probabilities and score them. That gives an *honest*
+  ensemble accuracy on data none of the models trained on — the same trustworthy yardstick
+  as before. We print each model's solo CV score next to the blend, so you can literally
+  see whether the ensemble earned its keep. (Usually the blend edges out the best single
+  model by a small but real margin.)
+- The same averaging is applied to the test predictions, and the result is written to
+  `submission_ensemble.csv` (kept separate from the baseline's `submission.csv` so you can
+  compare both on Kaggle).
+
+### How to take this further (once you've read the run output)
+
+- **Weighted blend:** instead of `/3` (equal weights), give the better models a bigger share
+  — e.g. `0.5*lgb + 0.3*cat + 0.2*xgb`. Tune the weights against the OOF score, never the
+  leaderboard.
+- **Stacking:** feed the three models' OOF probabilities as *inputs* to a small final model
+  (a "meta-learner") that learns how best to combine them. More powerful, more complex —
+  worth doing only after the simple average is working and measured.
+- **More diversity:** add a model from a different family entirely (logistic regression, a
+  small neural net). The more genuinely different the members, the more the blend can gain.
+
+The throughline: the ensemble didn't introduce a single *new* idea you hadn't already met
+in the baseline. It reused the CV loop, OOF predictions, and probability averaging — just
+three times and blended. That's how real projects grow: verified foundation first, then one
+well-measured step at a time.
+
+---
+
+## Part 10 — Deep dive: how the model actually learns and predicts
+
+This is the engine room. Parts 0–9 told you *what* the model does; this part shows the exact
+arithmetic of *how a tree gets its numbers* and *how those numbers become a prediction*. It's
+the most advanced section — read it once you're comfortable with everything above. It answers
+three questions people always trip on:
+
+1. Where do the numbers inside the leaves come from? (training)
+2. How do those numbers turn into a GALAXY/QSO/STAR decision? (prediction)
+3. Does it matter how many rows fall into a leaf? (regularization)
+
+### 10.1 Prediction first (the short recap)
+
+To classify one object, the model:
+
+1. Drops the object's **whole feature vector** through **every** tree (~550 of them).
+2. In each tree, forced yes/no questions route it to **exactly one leaf**; it collects that
+   leaf's number for each class.
+3. **Sums the numbers down each class** (across all trees) → 3 raw scores `(G, Q, S)`.
+4. **Softmax** turns the 3 scores into 3 probabilities that sum to 1:
+   `p_G = e^G / (e^G + e^Q + e^S)`, and likewise for Q and S.
+5. **argmax** picks the biggest probability → the predicted class.
+
+Three things people get wrong here, stated plainly:
+
+- **No single tree or leaf ever holds a final probability.** A leaf contributes a tiny nudge
+  (like `+0.33`). The 0.74 kind of number only exists *after summing all trees and softmax*.
+- **The prediction uses ALL features, not one threshold.** Two rows that share one feature
+  value can still get different predictions, because other trees split on other features and
+  route them to different leaves there. A row matches another's prediction only if its full
+  feature vector follows the same path in *every* tree.
+- **argmax commits to a label even when unsure.** A probability of 0.74 still means "predict
+  this class," but ~1 in 4 such rows is genuinely something else. The label is decided; the
+  certainty isn't. (Shaving those uncertain cases is what the ensemble does.)
+
+### 10.2 Training: where the leaf numbers come from (a hand-worked 5-tree trace)
+
+The numbers in the leaves are **learned** by repeatedly correcting errors. Here is the full
+loop on 4 tiny training rows and 5 trees (= 5 rounds). Two simplifications to keep it readable
+(real libraries do the same thing, just scaled): learning rate **η = 0.5** (real is 0.03, but
+that needs hundreds of rounds to show movement), and **leaf value = the average "error" of the
+rows in it**, where **error = truth − predicted probability**.
+
+The four rows (one feature, `redshift`; note the direction — near-zero = STAR, moderate =
+GALAXY, huge = QSO):
+
+| Row | redshift | true class |
+|-----|----------|------------|
+| A   | 0.4      | GALAXY     |
+| B   | 2.8      | QSO        |
+| C   | 0.0005   | STAR       |
+| D   | 0.7      | GALAXY     |
+
+Every row carries 3 running scores `(G, Q, S)`, all starting at 0. Each round:
+**scores → softmax → error → build tree → leaf value = avg error → update scores → repeat.**
+
+**Tree 1.** Scores all 0 → softmax gives `0.333` for every class. Error = truth − 0.333:
+
+| Row (true) | err(G) | err(Q) | err(S) |
+|------------|--------|--------|--------|
+| A (G)      | +0.667 | −0.333 | −0.333 |
+| D (G)      | +0.667 | −0.333 | −0.333 |
+| B (Q)      | −0.333 | +0.667 | −0.333 |
+| C (S)      | −0.333 | −0.333 | +0.667 |
+
+The tree splits on `redshift` into leaves `{C}` (redshift < 0.01), `{A,D}` (0.01–1.0), `{B}`
+(> 1.0). Each leaf's value = average error of its rows. Update `score += η × value = 0.5 ×
+value`:
+
+| Row | G | Q | S |
+|-----|------|------|------|
+| A,D | +0.333 | −0.167 | −0.167 |
+| B   | −0.167 | +0.333 | −0.167 |
+| C   | −0.167 | −0.167 | +0.333 |
+
+**Trees 2–5** repeat the identical five steps. Here is row A's GALAXY score and probability
+climbing as each tree adds its correction (B's QSO and C's STAR track this exactly by symmetry;
+D shares A's leaf, so D = A throughout):
+
+| After   | GALAXY score (sum of leaf values) | GALAXY prob | error still to fix |
+|---------|-----------------------------------|-------------|--------------------|
+| start   | 0.000 | 0.333 | 0.667 |
+| tree 1  | 0.333 | 0.452 | 0.548 |
+| tree 2  | 0.607 | 0.554 | 0.446 |
+| tree 3  | 0.830 | 0.635 | 0.365 |
+| tree 4  | 1.013 | 0.696 | 0.304 |
+| tree 5  | 1.165 | 0.741 | 0.259 |
+
+Two lessons fall straight out of this table:
+
+- **The per-tree leaf values ARE the `+0.33, +0.27, +0.22 …` corrections** — now you've seen
+  them *computed* from errors, not assumed. Summing them is the GALAXY score; softmax turns it
+  into 0.741.
+- **Each tree's correction shrinks** (the "error to fix" column melts: 0.667 → 0.548 → …).
+  Every tree only cleans up what previous trees left wrong. That's *why* boosting needs many
+  small trees and why, with the real η = 0.03, it takes hundreds of rounds for the error to
+  approach zero.
+
+To predict a new object you **freeze** all these learned leaf values, drop the object through
+the frozen trees, sum, and softmax. Training *writes* the leaf numbers; prediction *reads* them.
+
+### 10.3 Does leaf size matter? Regularization and the `G / (H + λ)` formula
+
+A natural question: if two galaxy rows share a leaf but a quasar sits alone in its own leaf,
+does the bigger leaf push harder? In the simplified **average-error** version above, **no** —
+averaging two identical `+0.667` errors gives `+0.667`, the same as one row, so the count
+cancels and the trace stays symmetric.
+
+But **real models don't pure-average — they regularize**, and that breaks the tie. The actual
+leaf value in LightGBM/XGBoost is:
+
+```
+                G        (sum of the gradients/errors of the rows in the leaf)
+leaf value =  -------
+              H + λ      (sum of their "confidence" terms  +  reg_lambda)
+```
+
+- Numerator `G` sums the errors — grows with more rows.
+- Denominator `H` sums a per-row confidence term — also grows with more rows.
+- `λ` = `reg_lambda` (we use **2.0**) is a fixed brake added to the denominator.
+
+With `λ = 0`, numerator and denominator both double for 2 rows → they cancel → same value as 1
+row (the averaging case). With `λ > 0`, the fixed brake gets **diluted** when more rows pile in.
+Worked numbers for round 1 with our `λ = 2` (using per-row error 0.667 and confidence 0.222):
+
+- **Galaxy leaf `{A,D}` (2 rows):** `G = 1.333`, `H = 0.444` → `1.333 / (0.444 + 2) = 0.546`
+- **QSO leaf `{B}` (1 row):**     `G = 0.667`, `H = 0.222` → `0.667 / (0.222 + 2) = 0.300`
+
+Same per-row error, but the 2-row leaf pushes `0.546` vs the 1-row leaf's `0.300` — almost
+double. So with regularization, **more supporting rows → bigger, more-trusted correction →
+higher probability.** The intuition: `λ` says "don't trust a leaf much without enough
+evidence," and two rows is more evidence than one.
+
+Leaf size shows up three more ways, all pointing the same direction:
+
+1. **The tree prefers splits that serve bigger groups** (it ranks splits by *total* gain summed
+   over rows), so rare patterns may never earn their own leaf.
+2. **`min_child_samples = 40`** forbids a leaf built from fewer than 40 rows outright — a
+   hard "enough evidence" floor that would have banned our 1-row toy leaves entirely.
+3. **Dataset prevalence (the biggest effect):** if one class dominates the data — and galaxies
+   do here (~162k predicted vs ~50k QSO, ~35k STAR) — then most leaves in most trees lean that
+   way and the model's baseline tilts toward it. A common class genuinely gets higher
+   probabilities overall.
+
+So the honest reconciliation: in the **idealized** average (`λ = 0`) leaf size doesn't change
+the push; in a **real** model (`reg_lambda = 2.0`, `min_child_samples = 40`, imbalanced
+classes) it does. **Regularization is the mechanism that turns "more supporting rows" into
+"more confidence."** That single idea separates the toy version from the production algorithm.
