@@ -966,3 +966,116 @@ One more distinction worth holding: **methodology lessons** (CV is optimistic he
 floor is ~0.003; blending didn't help) are validated by the *process* and you keep them
 permanently. **Individual model changes** are validated one at a time by controlled CV/LB
 comparison. Don't confuse the two.
+
+---
+
+## Part 12 — The full journey: from a baseline to the ceiling (every step, and what it taught)
+
+Parts 0–11 taught the *machinery*. This part narrates the actual *project* — the decisions,
+the surprises, and the reasoning at each fork — because that thought process is the real,
+transferable skill. It doubles as a map to the two deep-dive docs:
+[`docs/diagnostics.md`](docs/diagnostics.md) and [`docs/experiments.md`](docs/experiments.md).
+
+### Step 1 — Build the simplest honest thing first
+
+We started with **one** model (LightGBM), physics-motivated features, and 5-fold
+cross-validation. No ensemble, no tuning. The CV said **0.96805**. The temptation at this
+point is to immediately pile on complexity. We resisted — *you earn the right to add
+complexity by proving the simple version's number is real.* That instinct turned out to be
+the most important decision in the project.
+
+### Step 2 — The first submission, and the shock
+
+We submitted and the leaderboard returned **0.95657** — **0.011 below** the CV. On ~49,000
+public rows, random noise is ~±0.001, so a 0.011 miss is **~10× too big to be luck**. The CV
+hadn't wobbled; it had *lied*. **Lesson: a submission that drops teaches you something; a
+submission that matches teaches you nothing.** This is why you submit early — not to score,
+but to *test your own measuring instrument*.
+
+### Step 3 — Debug it like a scientist, not a guesser
+
+Faced with the gap, the wrong move is to start randomly changing things. The right move is
+**hypothesis elimination**: list every explanation, then kill each with evidence. We falsified
+**seven** in a row (full detail in `docs/diagnostics.md`):
+
+| Suspect | The test that killed it |
+|---|---|
+| Unseen categories → NaN | 0 test rows affected |
+| Distribution shift | identical feature ranges |
+| Leaky categoricals | only 0.767 accuracy alone |
+| Hidden multivariate shift | **adversarial validation**: AUC 0.5006 |
+| A specific model's bug | prediction-agreement analysis |
+| Early-stopping leak (my own theory) | **leak-free OOF** dropped only 0.0005 |
+| Duplicate rows | 100% unique |
+
+Two techniques worth stealing: **adversarial validation** (train a classifier to tell train
+from test — if it can't, the feature distributions are identical) and a **leak-free OOF**
+recomputation (re-derive the CV with the suspected leak removed and see if the number moves).
+And note the sixth row: **the hypothesis that died was *mine*.** Falsifying your own favourite
+theory is the whole game.
+
+### Step 4 — Name the cause: concept drift
+
+What survived: the features are provably identical between train and test, yet an honest CV
+still overshoots the test. Logically the difference can only live in the *label rule* —
+`P(class | features)` differs subtly between train and test. That's **concept drift**, common
+in synthetic competition data. It can't be "fixed" in the pipeline because the pipeline is
+clean. **Lesson: sometimes the bug is in the data, not your code — and proving *that* is as
+valuable as a fix, because it stops you wasting weeks hunting a bug that isn't there.**
+
+### Step 5 — Try to beat it, honestly, one lever at a time
+
+With a trustworthy diagnosis, we ran a controlled campaign (full log in
+`docs/experiments.md`). Each idea was **one change against the same baseline** (an *ablation*),
+judged against the **noise floor** (~0.003 CV):
+
+- **More engineered features** → no gain. They were recombinations of columns the trees could
+  already represent internally. (For tree models, hand-made interactions rarely help — unlike
+  linear models.)
+- **Target encoding** → +0.00000. Native categorical handling already captured it.
+- **Dropping sky position** → −0.014. A *huge* drop, even though importance ranked those
+  features low. **Lesson: importance ≠ necessity — only ablation reveals what's safe to remove.**
+- **Hyperparameter tuning** → +0.00001. The defaults were already good.
+- **External real SDSS data** → leaderboard-null. (A denoising bet; the drift wasn't the kind
+  real data fixes.)
+- **kNN label lookup** → falsified *offline, for free*, on the labelled train set — no
+  submission spent. **Lesson: test the cheapest version of a hypothesis first.**
+
+Every result was a documented *negative*. That is not failure — **knowing precisely what
+doesn't work, and why, is the harder half of the job.**
+
+### Step 6 — The stacking finale, and finding the real ceiling
+
+The leaderboard leaders (Kaggle Grandmasters) reach ~0.97 with **stacking**: many *diverse*
+base models combined by a meta-model, plus a foundation model (**TabPFN**). We reproduced it:
+
+- Our earlier blend failed because it was two near-identical GBMs (~99.5% correlated). **Lesson:
+  averaging only helps when models are *both strong and different*.**
+- We added genuine diversity (linear, neural) + TabPFN, with a logistic-regression
+  meta-learner (`src/stack.py`, `src/stack_tabpfn.py`, `notebooks/gpu_stack.ipynb`).
+- On CPU, TabPFN was starved (a 5k-row context) and the stack lost. On a **GPU** it got a 16k
+  context and TabPFN improved (0.952 → 0.9565) — but the stack *still* lost (private 0.95483 vs
+  the baseline's 0.95736).
+
+The honest conclusion: the technique was right, but TabPFN's strength needs far more context
+than a free GPU's memory allows. **The ~0.97 gap is a compute/hardware ceiling, not a
+technique gap.** And it forced an honest **correction of an earlier over-confident claim** of
+mine ("0.957 is the ceiling") — the project's own lesson, *never trust an unverified result*,
+caught my own conclusion.
+
+### The meta-lessons (the transferable part)
+
+1. **Simplest-that-works first; earn complexity with evidence.** The tuned single LightGBM beat
+   every fancier thing we built.
+2. **Submit to test your instrument, not just to score.** The CV/LB gap only surfaced because
+   we submitted.
+3. **Debug by falsification** — one hypothesis at a time, evidence over vibes, including killing
+   your own.
+4. **Respect the noise floor.** A change is real only if it beats what luck could produce.
+5. **Prefer changes with a mechanism you understand** over mysterious bumps.
+6. **Be honest about ceilings.** "Here is exactly where the standard levers stop, and why" is a
+   stronger result than a lucky number you can't explain.
+
+That sequence — *build → validate → catch the lie → diagnose → try exhaustively → know when to
+stop* — is what doing machine learning honestly looks like. The score is a footnote; the
+judgment is the point.
