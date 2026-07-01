@@ -91,11 +91,45 @@ standardised space), so the generator produced genuinely new points rather than
 memorising real rows; (2) 1-NN on 8 raw features is a weak classifier (0.885) next to
 the full model. **Discarded without a submission** — the offline test settled it.
 
+## Tier 4 — diverse stacking + local TabPFN (`src/stack.py`, `src/stack_tabpfn.py`)
+
+The leaders' actual technique: diverse base models combined by a logistic-regression
+meta-learner (Chris Deotte's "stacker"). Two stacks were built:
+
+- **4-model:** LightGBM + XGBoost + LogisticRegression + MLP.
+- **5-model:** the above + **TabPFN**, a tabular foundation model, run **fully locally**
+  (weights from a *public* HuggingFace repo, CPU inference, telemetry/browser-login
+  disabled — no data leaves the machine).
+
+| | Individual acc | Stack result |
+|---|---|---|
+| LightGBM / XGBoost | 0.968 / 0.968 | strong |
+| LogReg / MLP | 0.932 / 0.958 | weak, diverse |
+| TabPFN (CPU, 5k context) | 0.952 | weak (starved of data) |
+| 4-model stack (full-train CV) | | 0.96769 (below baseline) |
+| **5-model stack + TabPFN (LB)** | | **public 0.95440 / private 0.95522** |
+
+**Both stacks underperformed the baseline** (0.95736 private); the TabPFN stack lost by
+~0.002 on the leaderboard. Two reasons:
+
+1. **Diversity from *weak* members doesn't help.** A meta-learner cannot manufacture
+   accuracy from models individually far weaker than LightGBM (0.93–0.96 vs 0.968); it
+   only dilutes the strong one.
+2. **The key ingredient needs a GPU.** TabPFN is what powers the leaders' stacks, but its
+   strength requires feeding it lots of data at GPU speed. On CPU (~86 rows/s) only a
+   5k-row context of 577k was feasible, crippling exactly the member that mattered.
+
+A final CV lesson: the 5-model *subsample* CV read 0.9699 while the leaderboard returned
+0.955 — a **0.015 gap**. Subsample CV on this competition is worthless; only the LB
+judges. This is a hardware ceiling, honestly hit: the method was reproduced, the compute
+was not.
+
 ## Conclusion
 
 Across engineered features, target encoding, feature pruning, hyperparameter tuning,
-model blending, real-data augmentation, and nearest-neighbour label lookup, **nothing
-beat the plain LightGBM baseline** (0.95736 private). That is the honest result: on this competition, with this
+model blending, real-data augmentation, nearest-neighbour label lookup, and diverse
+stacking with a local TabPFN, **nothing beat the plain LightGBM baseline** (0.95736
+private). That is the honest result: on this competition, with this
 approach, ~0.957 is the ceiling, and the ~0.011 gap to a hypothetical 0.968 is concept
 drift that none of these levers could close.
 
@@ -139,4 +173,7 @@ So two of my earlier statements need correcting:
 The concept-drift *diagnosis* stands (it is real and measured), but calling it an
 immovable ceiling was an overreach. Fittingly, the project's own lesson — *never trust a
 result you haven't stress-tested* — caught my **own** conclusion once we looked at the
-leaderboard. A stacking attempt at closing this gap is logged in Tier 4 below.
+leaderboard. The stacking attempt to close this gap is logged in Tier 4 above: it
+reproduced the leaders' method but underperformed, because on CPU the one strong diverse
+member (TabPFN) could not be given enough data. The leaders' edge is real — and it is a
+GPU-plus-full-data edge, not a trick.
