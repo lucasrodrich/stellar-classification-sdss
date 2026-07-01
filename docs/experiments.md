@@ -68,11 +68,34 @@ the ±0.001 noise floor, and **opposite in sign**, the classic signature of pure
 Only 0.37% of predictions changed. **Discard.** The concept drift here is not the kind
 of correctable generator label-noise that real data fixes.
 
+## Tier 3 — nearest-neighbour label lookup (`src/knn_lookup.py`)
+
+**Hypothesis:** if the synthetic rows are near-copies of real SDSS objects, the nearest
+real neighbour's label recovers the truth better than the model in some regions — the
+suspected route to the 0.970 leader cluster.
+
+**Tested for free, offline, on the labelled training set** (no submission spent): for
+each train row, find its nearest real neighbour (standardised features) and compare a
+"use the real label when the match is very close, else trust the model" hybrid against
+the model alone.
+
+| | Accuracy on train |
+|---|---|
+| Model (baseline OOF) | **0.96805** |
+| kNN label (all rows) | 0.88525 |
+| Best hybrid (override closest 1%) | 0.96751 |
+
+**Falsified.** Every override threshold made it *worse*. Two reasons: (1) no
+near-duplicates exist — the closest synthetic→real distance is 0.029 (median 0.31 in
+standardised space), so the generator produced genuinely new points rather than
+memorising real rows; (2) 1-NN on 8 raw features is a weak classifier (0.885) next to
+the full model. **Discarded without a submission** — the offline test settled it.
+
 ## Conclusion
 
 Across engineered features, target encoding, feature pruning, hyperparameter tuning,
-model blending, and real-data augmentation, **nothing beat the plain LightGBM
-baseline** (0.95736 private). That is the honest result: on this competition, with this
+model blending, real-data augmentation, and nearest-neighbour label lookup, **nothing
+beat the plain LightGBM baseline** (0.95736 private). That is the honest result: on this competition, with this
 approach, ~0.957 is the ceiling, and the ~0.011 gap to a hypothetical 0.968 is concept
 drift that none of these levers could close.
 
@@ -82,9 +105,12 @@ luck, a principled CV-vs-LB distinction, and the willingness to run the highest-
 idea (external data) and **report that it failed**. Knowing what *doesn't* work, and
 why, is the harder and more valuable half of the job.
 
-### If the hunt continued
+### On the ~0.970 leader cluster
 
-The most likely path to the ~0.970 leader cluster is **not** more modelling — it's
-matching synthetic test rows back to their nearest real SDSS neighbours to recover
-cleaner labels (a lookup, not a fit). That is a genuinely different technique and a
-separate experiment; it is noted here as the next hypothesis rather than a claim.
+The obvious external-data routes have now been tested and rejected: augmentation (Tier
+2, null on the leaderboard) and nearest-neighbour label lookup (Tier 3, falsified
+offline). The generator did not memorise the real data, so there is no simple
+real-label leak to exploit. Whatever separates the top of the board from ~0.957 is not
+one of the standard tabular levers tried here — and chasing it further would be
+guessing, not reasoning. The disciplined stopping point is the verified baseline plus a
+complete, honest record of what did not work and why.
