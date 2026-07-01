@@ -73,7 +73,7 @@ ignore CV moves below the noise floor, and never trust complexity you can't veri
 ## Repository layout
 
 ```
-kaggle-stellar-class/
+stellar-classification-sdss/
 ├── src/
 │   ├── stellar.py     # LightGBM 5-fold baseline → submission.csv
 │   ├── ensemble.py    # LGB + XGB + CatBoost, OOF blend + weight search
