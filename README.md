@@ -116,6 +116,18 @@ python src/figures.py      # regenerate assets/ figures
 - **Honest evaluation & communication** — reporting the real 0.956, not the
   flattering 0.968, and explaining exactly why they differ.
 
+## Development note
+
+This project was built **AI-assisted**, using [Claude Code](https://www.anthropic.com/claude-code)
+(Anthropic's agentic coding CLI) as a pair programmer for scaffolding, implementation,
+and running experiments. The **direction and judgment are mine**: choosing the
+physics-motivated feature strategy, reading the CV-vs-leaderboard gap as a red flag
+worth chasing, deciding which hypotheses to test and in what order, calling when to
+drop the ensemble, and insisting on the honest 0.956 over the flattering 0.968. I used
+the model as a fast collaborator to be *directed and verified* — including discarding
+its incorrect early-stopping hypothesis when the evidence contradicted it — which is
+the AI-augmented workflow I'd bring to a team.
+
 ## Further reading
 
 - **[docs/diagnostics.md](docs/diagnostics.md)** — the CV-vs-leaderboard investigation.
