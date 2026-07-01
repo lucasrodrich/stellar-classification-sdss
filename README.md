@@ -131,6 +131,10 @@ the AI-augmented workflow I'd bring to a team.
 ## Further reading
 
 - **[docs/diagnostics.md](docs/diagnostics.md)** — the CV-vs-leaderboard investigation.
+- **[docs/experiments.md](docs/experiments.md)** — a controlled campaign of improvement
+  attempts (features, target encoding, tuning, real-data augmentation) — every one
+  honestly measured, and every one a documented dead end. Demonstrates ablation
+  discipline and the "importance ≠ necessity" lesson.
 - **[LEARNING.md](LEARNING.md)** — a from-scratch walkthrough of the pipeline and the
   gradient-boosting internals (how a tree's leaf values are learned and how
   predictions are computed), written to be understandable without an ML background.

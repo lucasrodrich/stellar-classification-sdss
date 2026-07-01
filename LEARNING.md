@@ -887,3 +887,82 @@ So the honest reconciliation: in the **idealized** average (`λ = 0`) leaf size 
 the push; in a **real** model (`reg_lambda = 2.0`, `min_child_samples = 40`, imbalanced
 classes) it does. **Regularization is the mechanism that turns "more supporting rows" into
 "more confidence."** That single idea separates the toy version from the production algorithm.
+
+---
+
+## Part 11 — Cross-validation vs the leaderboard, and how to know what actually helped
+
+Two ideas that sound the same but aren't, and that together are the difference between real
+progress and fooling yourself.
+
+### 11.1 CV and the leaderboard are two *different* scores
+
+You are given two datasets:
+
+| File | Rows | Has the answer (`class`)? |
+|------|------|---------------------------|
+| `train.csv` | 577,347 | **Yes** — answers included |
+| `test.csv`  | 247,435 | **No** — answers hidden by Kaggle |
+
+You only ever *see* the answers for the training data. From that come two scores:
+
+- **Cross-validation (CV)** — *you* compute it, locally, on the **training** data. You hide a
+  chunk of `train.csv` from the model, predict it, and grade against answers you already have.
+  Free, unlimited, private. It is your **estimate** of how you'll do.
+- **Leaderboard (LB)** — *Kaggle* computes it on the **test** data. You submit predictions;
+  Kaggle grades them against the **hidden** true answers. Limited (~5/day). It is the **real
+  result** on data the model has never seen.
+
+**Analogy:** CV is practising with past exam papers *that come with an answer key* — you grade
+yourself, all day. The LB is *sitting the real exam*, graded by the teacher, with an answer key
+you never see. The whole point of CV is to **predict your real-exam score before you sit it.**
+
+When the pipeline is clean, CV closely predicts the LB — that's it doing its job. In this
+project they *diverged* (CV 0.968 vs LB 0.956) because of **concept drift**: the train and test
+rows follow slightly different label rules, so practising on the training papers overstated the
+real exam. See [`docs/diagnostics.md`](docs/diagnostics.md).
+
+### 11.2 When you change something and the score moves — what do you keep?
+
+The hard question: if the score goes up, how do you know *which* part of your change caused it,
+and what to keep vs discard vs modify? The answer is **controlled experimentation.**
+
+**You can only credit a result to a change if you isolate that change.** Change five things at
+once and the LB rises — you've learned nothing reusable, because any of the five (or a lucky
+cancellation of good and bad ones) could be responsible. So:
+
+1. **Fix a baseline** — the same reference every time (here: LightGBM, 27 features).
+2. **Change exactly one thing** — one feature set, or external data, or one hyperparameter.
+3. **Measure the delta against that baseline.** That delta *is* the effect of that one change.
+   (This is an **ablation**, and it's exactly why `src/experiments.py` tests each idea as a
+   separate variant against the identical baseline.)
+
+**The decision rule:**
+
+| Result of the one-variable test | Decision |
+|---|---|
+| Beats the score by **more than the noise floor**, and you know *why* | **Keep** |
+| Moves **less than the noise floor** (~0.003 CV, ~±0.001 LB) | **Discard** — indistinguishable from luck |
+| **Hurts** the score | **Discard** |
+| Helps, and you have a hypothesis to do it better | **Modify** — as a *new* one-variable test |
+
+The **noise floor is the gatekeeper**: a change is good only if the score moved *more than
+random wobble could explain*. The ensemble's +0.00004 CV "gain" was below noise — and was
+actually worse on the LB.
+
+**The catch:** a gradient-boosted model is thousands of tree rules. You **cannot** inspect one
+learned rule and label it good or bad — you validate the **whole model as a unit** via CV/LB,
+and use *feature importance* (what it leaned on) and *error analysis* (where it fails) as
+indirect windows. So "keep vs discard" operates on **your changes** (features, data, params),
+never on individual learned rules. You steer the black box from the outside.
+
+**The trap:** even an LB *increase* can fool you. The public LB is itself a ~49k-row sample
+(±0.001 noise), so a tiny bump can be luck that vanishes on the private set ("leaderboard
+overfitting"). Two defences: demand a delta bigger than that noise, and **prefer changes with a
+mechanism you understand** — "external data helped because it denoises the labels" is
+trustworthy; "the number went up and I don't know why" reverses on you.
+
+One more distinction worth holding: **methodology lessons** (CV is optimistic here; the noise
+floor is ~0.003; blending didn't help) are validated by the *process* and you keep them
+permanently. **Individual model changes** are validated one at a time by controlled CV/LB
+comparison. Don't confuse the two.
