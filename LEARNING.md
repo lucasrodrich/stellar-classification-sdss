@@ -10,6 +10,13 @@ This file is a teaching companion to the code. It explains **two different thing
 
 Read it top to bottom once. Then keep it open beside `src/stellar.py` as a reference.
 
+> **Important context added after the fact:** the "~0.968" cross-validated accuracy
+> celebrated below turned out to be **optimistic** — the real leaderboard score is
+> **~0.956**. That gap became the most valuable lesson in the whole project. Wherever
+> this file says 0.968, read it as "the CV estimate," and see
+> [`docs/diagnostics.md`](docs/diagnostics.md) for why CV and reality diverged and how
+> I tracked it down.
+
 ---
 
 ## Part 0 — The mental model (read this first)
@@ -561,7 +568,10 @@ The model is almost a detail; the discipline of measuring honestly is the skill.
   You now understand every piece you'll need: the CV loop, OOF predictions, probability
   averaging. The ensemble is just doing what this script does, three times, and blending.
 
-You built (and now understand) a verified 0.968-accuracy pipeline. That's a real foundation.
+You built (and now understand) a working pipeline with a **0.968 cross-validated**
+estimate. (Spoiler for later: the real leaderboard score is ~0.956 — see
+[`docs/diagnostics.md`](docs/diagnostics.md). Understanding *why* is the real prize.)
+That's a genuine foundation.
 
 ---
 

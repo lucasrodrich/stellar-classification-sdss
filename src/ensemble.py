@@ -220,7 +220,10 @@ def search_blend_weights(oofs, y, step=0.05):
             acc = accuracy_score(y, blend.argmax(1))
             if acc > best_acc:
                 best_acc = acc
-                best_w = (round(w_lgb, 3), round(w_xgb, 3), round(w_cat, 3))
+                # cast to plain float and add 0.0 to normalise -0.0 -> 0.0
+                best_w = (round(float(w_lgb) + 0.0, 3),
+                          round(float(w_xgb) + 0.0, 3),
+                          round(float(w_cat) + 0.0, 3))
     return best_w, best_acc
 
 
